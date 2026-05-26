@@ -256,6 +256,38 @@ Open an opportunity and click **+ Log activity** to record:
 
 ---
 
+### Asking cross-domain questions
+
+The bot pulls context from multiple sources automatically — you don't need to specify where to look. Examples:
+
+**Full client picture:**
+```
+@Belmar what's the full picture on Valley Health?
+@Belmar is there anything I need to know before my call with UJA today?
+@Belmar show me everything related to Blueberry River this week
+```
+
+**Email and calendar aware:**
+```
+@Belmar what emails are waiting for my reply?
+@Belmar do I have any client calls today?
+@Belmar has Valley Health replied to the invoice we sent?
+@Belmar when did we last speak to Gordon Brothers?
+```
+
+**Searching past Slack conversations:**
+```
+@Belmar what was decided about the UJA scope last week?
+@Belmar has anyone flagged issues on the Valley Health project?
+```
+
+**Actions the bot can take (always asks for confirmation first):**
+```
+@Belmar log 6.5 hours on UJA CR#2 — data migration review
+@Belmar draft a follow-up to Valley Health about their overdue invoice
+@Belmar book a 30 min call with David at UJA for next week
+```
+
 ## Getting help
 
 - **Technical issues** — contact your system administrator

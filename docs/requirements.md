@@ -1,7 +1,7 @@
 # Belmar Cloud — Internal Platform Requirements
-**Version:** 0.1 (Discovery)
+**Version:** 0.2
 **Date:** May 2026
-**Scope:** Full replacement of Salesforce (CRM) + Ruddr (PSA) with a single internal platform, plus a client-facing portal.
+**Scope:** Full replacement of Salesforce (CRM) + Ruddr (PSA) with a single AI-first internal platform, Slack as primary UI for agents and queries, plus a client-facing web portal. Agents have full context across CRM, PSA, Google Workspace (Gmail + Calendar), and Slack conversation history.
 
 ---
 
@@ -13,16 +13,22 @@ Belmar Cloud is a Salesforce consulting firm. The platform needs to support the 
 
 - **Replace Salesforce** — pipeline management, accounts, contacts, opportunities, proposals
 - **Replace Ruddr** — projects, resource allocation, time tracking, forecasting, invoicing
+- **AI-first interaction** — Slack is the primary interface for queries, actions, and alerts via intelligent agents
+- **Web app** — full-featured browser UI for structured data entry, dashboards, and reporting
 - **Add client portal** — clients can view project status, time logs, and invoices
 - **Single source of truth** — one platform, one login, no more data living in two systems
 
 ### Constraints
 - Single tenant (Belmar Cloud only)
-- Authentication via Google OAuth (`@belmarcloud.com` accounts only)
+- Authentication via Google OAuth (`@belmarcloud.com` accounts for internal users)
 - Client portal users authenticate via Google (any domain — invited by Belmar)
 - Data migration required from both Salesforce and Ruddr
-- Built on Cloudflare infrastructure (Workers, Pages, R2, D1/Neon)
-- AI-assisted via Anthropic API (Claude)
+- Built on Cloudflare infrastructure (Workers, Pages, R2, Neon)
+- AI layer via Anthropic API (Claude Sonnet) — powers both Slack agents and web app intelligence
+- Slack workspace is the primary real-time interface during and after transition
+- Agents have cross-domain context: CRM + PSA + Gmail + Google Calendar + Slack history
+- Google Workspace access via existing MCP connectors (Gmail MCP, Google Calendar MCP)
+- Slack history access via Slack Search API (bot token with `search:read` scope)
 
 ---
 
@@ -39,7 +45,231 @@ Belmar Cloud is a Salesforce consulting firm. The platform needs to support the 
 
 ---
 
-## 3. Entities & Relationships
+## 3. AI Agent Layer (Slack-first)
+
+### Philosophy
+The platform is **AI-first**. Slack is not a bolt-on — it is the primary way the team interacts with business data day to day. The web app handles structured data entry and rich visualisation. Slack handles everything else — queries, alerts, quick actions, scheduled reports, and analysis.
+
+### Interface layers
+
+| Interface | Primary use | Who uses it |
+|---|---|---|
+| **Slack** | Queries, quick actions, alerts, scheduled reports | All internal staff |
+| **Web app** | Dashboards, data entry, detailed views, reports | All internal staff |
+| **Client portal** | Project status, invoices, time logs | Client users only |
+
+### Agent architecture
+
+```
+SLACK MESSAGE
+      ↓
+ORCHESTRATOR AGENT
+Reads message → decides which specialist agent handles it
+      ↓
+┌─────────────┬──────────────┬──────────────┬─────────────┬─────────────┐
+│  DELIVERY   │    SALES     │   FINANCE    │   REPORT    │   ACTION    │
+│   AGENT     │    AGENT     │    AGENT     │   AGENT     │   AGENT     │
+│             │              │              │             │             │
+│ Forecasts   │ Pipeline     │ Invoices     │ Cross-domain│ Writes data │
+│ Capacity    │ Opportunities│ Payments     │ Trends      │ (confirmed) │
+│ Allocations │ Accounts     │ Revenue      │ Anomalies   │             │
+│ Time entries│ Contacts     │ Overdue      │ Analysis    │             │
+│ Health      │ Activities   │              │             │             │
+└─────────────┴──────────────┴──────────────┴─────────────┴─────────────┘
+      ↓
+PLATFORM API (Hono.js Worker) + MCP SERVERS (Ruddr, Salesforce during migration)
+      ↓
+RESPONSE → posted back to Slack thread
+```
+
+### Agent data sources
+
+Each agent has access to a combination of data sources depending on its domain. The orchestrator selects which sources to activate per query.
+
+| Data source | Access method | Available now? | Agent(s) |
+|---|---|---|---|
+| **Platform CRM** | Platform API | ⏳ Phase 3 | Sales, Report |
+| **Platform PSA** | Platform API | ⏳ Phase 1 | Delivery, Finance, Report |
+| **Ruddr** | Ruddr MCP | ✅ Now | Delivery, Report |
+| **Salesforce** | Salesforce MCP | ✅ Now | Sales, Report |
+| **Gmail** | Gmail MCP | ✅ Now | Sales, Delivery, Report, Action |
+| **Google Calendar** | Calendar MCP | ✅ Now | Sales, Delivery, Report |
+| **Slack history** | Slack Search API | ✅ Now (with `search:read` scope) | All agents |
+
+### Cross-domain context examples
+
+The power of multi-source agents is synthesising across all domains in a single answer:
+
+```
+@belmar what's the status on Valley Health?
+
+Agent pulls from:
+  → PSA:      Active project, 61.9h forecast, $16,347 rev, health green
+  → CRM:      Account status client, sales owner Ro-An, last opp closed Jan
+  → Gmail:    Last email 3 days ago — PM sent project update
+  → Calendar: Steering committee call booked Friday 2pm
+  → Slack:    #belmar-delivery mentioned budget concern last Tuesday
+
+Response:
+"*Valley Health Foundation* — here's the full picture:
+• *Project:* MSA active, 61.9h forecast this month, on track (green)
+• *Last contact:* Cole emailed an update 3 days ago
+• *Upcoming:* Steering committee call Friday at 2pm
+• *Heads up:* Budget concern raised in #belmar-delivery on Tuesday — 
+  want me to pull that thread?"
+```
+
+```
+@belmar is there anything I need to know before my call with UJA today?
+
+Agent pulls from:
+  → Calendar: Call found at 3pm with David Rosenberg (UJA)
+  → CRM:      Account, open opportunity (Tax Receipting CR, $38k)
+  → PSA:      UJA CR#2 project down 72h from opening forecast
+  → Gmail:    Last email thread — invoice follow-up, no reply in 8 days
+  → Slack:    Cole flagged scope creep in #belmar-delivery last week
+
+Response:
+"*Prep for UJA call at 3pm with David Rosenberg:*
+• *Project health:* UJA CR#2 is down 72h from opening — flag this
+• *Open invoice:* $21,395 sent 8 days ago, no payment yet
+• *Scope concern:* Cole flagged potential scope creep last week 
+  in #belmar-delivery — worth aligning on today
+• *Opportunity:* Tax Receipting CR still open at $38k — good time 
+  to progress this"
+```
+
+```
+@belmar draft a follow-up email to Valley Health about their overdue invoice
+
+Agent pulls from:
+  → Finance:  Invoice #BC-2026-041, $16,347, 14 days overdue
+  → CRM:      Primary contact: Sarah Chen, sarah@valleyhealth.org
+  → Gmail:    Previous invoice emails — finds the original send
+  → PSA:      Project is healthy — no delivery issues to flag
+
+Response:
+"Here's a draft — reply YES to send, or edit first:
+
+To: sarah@valleyhealth.org
+Subject: Re: Invoice BC-2026-041 — Valley Health Foundation
+
+Hi Sarah,
+
+I wanted to follow up on invoice BC-2026-041 for $16,347...
+[full draft shown]
+
+Send this? Reply YES to confirm."
+```
+
+### Agent capabilities by phase
+
+| Agent | Phase 0 (now) | Phase 1 (PSA built) | Phase 3 (CRM built) |
+|---|---|---|---|
+| Delivery | ✅ Ruddr + Gmail + Calendar + Slack | ✅ Platform API + Gmail + Calendar + Slack | ✅ |
+| Sales | ✅ Salesforce + Gmail + Calendar + Slack | ✅ + PSA context | ✅ Platform CRM + all sources |
+| Finance | ⏳ Context only | ✅ Invoices + Gmail + Slack | ✅ |
+| Report | ✅ Ruddr + Salesforce + Gmail + Slack | ✅ Full PSA + billing | ✅ Full cross-domain |
+| Action | ✅ Gmail drafts + Calendar | ✅ Time, approvals + email send | ✅ Full CRM + billing |
+
+### Agent interaction patterns
+
+**PSA queries:**
+```
+@belmar what's our forecast vs opening for May?
+@belmar who has capacity this week?
+@belmar show me all projects in shortfall
+@belmar what's Blueberry River tracking at?
+```
+
+**CRM queries:**
+```
+@belmar what's the pipeline weighted value?
+@belmar show me all opportunities closing this month
+@belmar what's the status on the UJA expansion?
+```
+
+**Cross-domain queries (multi-source):**
+```
+@belmar what's the full picture on Valley Health?
+@belmar is there anything I need to know before my 3pm call?
+@belmar which clients haven't heard from us in 30 days?
+@belmar show me everything related to UJA this week
+```
+
+**Gmail + Calendar aware:**
+```
+@belmar what emails are waiting for a response?
+@belmar do I have any client calls today?
+@belmar has Sarah Chen replied to the invoice we sent?
+@belmar when did we last speak to Blueberry River?
+```
+
+**Slack history:**
+```
+@belmar what was decided about the UJA scope last week?
+@belmar has anyone flagged issues on the Valley Health project?
+@belmar find the message where Cole mentioned the budget concern
+```
+
+**Actions (write, with confirmation):**
+```
+User:   @belmar log 6.5 hours on UJA CR#2 today — data migration review
+Bot:    Log 6.5h on UJA CR#2 for Cole Berry, May 26? Reply YES to confirm.
+User:   yes
+Bot:    ✓ Logged. You're at 38h this week.
+
+User:   @belmar draft a follow-up to Valley Health about their overdue invoice
+Bot:    [shows draft email with full context pulled from CRM + Finance]
+        Send this to sarah@valleyhealth.org? Reply YES to confirm.
+
+User:   @belmar book a 30 min call with David at UJA for next week
+Bot:    Found David Rosenberg (david@uja.org) in CRM. 
+        You're both free Tuesday 2pm or Wednesday 10am. Which works?
+```
+
+**Analysis:**
+```
+@belmar why did March actual beat the opening by 167h?
+@belmar which clients are we most at risk of under-delivering to?
+@belmar is there a pattern in our lost opportunities this year?
+@belmar who on the team has the strongest relationship with Valley Health?
+```
+
+**Proactive / scheduled:**
+- Every Sunday 8am: weekly forecast snapshot + summary posted to `#belmar-ops`
+- Every Monday 8am: weekly briefing with pending approvals and key metrics
+- 1st of month: opening snapshot reminder
+- Last day of month: actual snapshot reminder
+- Ad hoc alerts: forecast drop >10%, invoice overdue, member over capacity
+
+### Slack channel structure
+
+| Channel | Purpose | Bot behaviour |
+|---|---|---|
+| `#belmar-ops` | General queries, daily updates | Responds to @mentions, posts scheduled reports |
+| `#belmar-delivery` | Project health, forecasts, capacity | Responds to @mentions, posts forecast alerts |
+| `#belmar-sales` | Pipeline updates, opportunity activity | Responds to @mentions |
+| `#belmar-finance` | Invoice alerts, payment notifications | Responds to @mentions, posts overdue alerts |
+| `#belmar-admin` | System alerts, errors (bot only posts) | System notifications only |
+
+### Action confirmation flow
+All write operations require explicit confirmation before execution:
+1. User requests action
+2. Bot summarises exactly what it will do (entity, values, affected records)
+3. User replies YES (or cancel)
+4. Bot executes and confirms, or cancels cleanly
+5. Destructive or financial actions (send invoice, mark paid) always require confirmation regardless of phrasing
+
+### Agent context and memory
+- Each Slack thread maintains conversation context
+- Agents remember prior turns within the same thread (e.g. "what about last month?" resolves correctly)
+- Cross-session memory is not persisted — each new thread starts fresh
+- Agents have access to today's date at all times
+
+---
+
+## 4. Entities & Relationships
 
 ### Core entities
 
@@ -144,9 +374,9 @@ PORTAL
 
 ---
 
-## 4. Workflows
+## 5. Workflows
 
-### 4.1 Sell
+### 5.1 Sell
 
 ```
 1. New lead identified
@@ -180,7 +410,7 @@ PORTAL
 | Closed Won | 100% |
 | Closed Lost | 0% |
 
-### 4.2 Deliver
+### 5.2 Deliver
 
 ```
 1. Project setup
@@ -209,7 +439,7 @@ PORTAL
    → Invoice generation triggered
 ```
 
-### 4.3 Bill
+### 5.3 Bill
 
 ```
 1. Invoice generation
@@ -231,7 +461,7 @@ PORTAL
    → Pipeline weighted forecast vs actual billed
 ```
 
-### 4.4 Client portal
+### 5.4 Client portal
 
 ```
 Client logs in with Google (their own Google account, any domain)
@@ -243,7 +473,7 @@ Client logs in with Google (their own Google account, any domain)
 
 ---
 
-## 5. Key Views & Reports
+## 6. Key Views & Reports
 
 ### Management dashboard
 - Monthly billable hours forecast vs actual (what we've already built)
@@ -280,7 +510,7 @@ Client logs in with Google (their own Google account, any domain)
 
 ---
 
-## 6. Data Migration Plan
+## 7. Data Migration Plan
 
 ### From Ruddr (via API)
 - Members → Members
@@ -313,7 +543,7 @@ Client logs in with Google (their own Google account, any domain)
 
 ---
 
-## 7. Integration Points (during transition)
+## 8. Integration Points (during transition)
 
 | System | Direction | Purpose | When to retire |
 |---|---|---|---|
@@ -326,132 +556,177 @@ Client logs in with Google (their own Google account, any domain)
 
 ---
 
-## 8. Technical Architecture
+## 9. Technical Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  CLIENTS                                             │
-│  browser (Cloudflare Pages)                         │
-│  React + TypeScript + TanStack Query                │
-│  - Internal app  (/app)                             │
-│  - Client portal (/portal)                          │
-└──────────────────┬──────────────────────────────────┘
-                   │ HTTPS + JWT
-┌──────────────────▼──────────────────────────────────┐
-│  API  (Cloudflare Worker — Hono.js)                  │
-│  /api/v1/...                                        │
-│  - Auth (Google OAuth verify + JWT issue)           │
-│  - REST endpoints per entity                        │
-│  - Role-based access control middleware             │
-│  - AI endpoints (Claude via Anthropic API)          │
-└──────┬─────────────────────┬────────────────────────┘
-       │                     │
-┌──────▼──────┐    ┌─────────▼────────┐
-│  Neon       │    │  Cloudflare R2   │
-│  Postgres   │    │  File storage    │
-│  (database) │    │  (PDFs, docs)    │
-└─────────────┘    └──────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  INTERFACES                                                   │
+│                                                              │
+│  Slack (@belmar bot)          Web app          Client portal │
+│  Primary daily interface      Full UI          External only │
+└───────┬──────────────────────────┬──────────────────┬────────┘
+        │                          │                  │
+        │ Slack Events API         │ HTTPS + JWT      │
+┌───────▼──────────────────────────▼──────────────────▼────────┐
+│  API LAYER  (Cloudflare Workers — Hono.js TypeScript)         │
+│                                                              │
+│  /api/v1/...          REST API for web app                   │
+│  /slack/events        Slack webhook receiver                 │
+│  /slack/actions       Slack interactive components           │
+│  /portal/api/...      Client portal API (restricted)         │
+│                                                              │
+│  AGENT ORCHESTRATION                                         │
+│  Orchestrator → Delivery | Sales | Finance | Report | Action │
+└──────┬───────────────────────────────────────────────────────┘
+       │
+┌──────▼──────┐  ┌─────────────┐  ┌──────────┐  ┌───────────┐
+│  Neon       │  │ Anthropic   │  │ Cloudflare│  │  Resend   │
+│  Postgres   │  │ API (Claude)│  │ R2 Storage│  │  (email)  │
+│  (database) │  │ (agents)    │  │ (files)   │  │           │
+└─────────────┘  └─────────────┘  └──────────┘  └───────────┘
+       ↑
+┌──────┴──────────────────────────────────────────────────────┐
+│  MCP SERVERS (during migration — retire per phase)           │
+│  Ruddr MCP (retire Phase 2) · Salesforce MCP (retire Phase 3)│
+└─────────────────────────────────────────────────────────────┘
 ```
+
+### Cloudflare Workers deployed
+
+| Worker | Purpose | Secrets needed |
+|---|---|---|
+| `belmar-api` | Main Hono.js API + agent orchestration | `NEON_DATABASE_URL`, `ANTHROPIC_API_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `JWT_SECRET`, `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` |
+| `belmar-ai-proxy` | Anthropic API proxy for web app (browser → Claude) | `ANTHROPIC_API_KEY` |
+| `belmar-slack-bot` | Slack event receiver + agent runner | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `ANTHROPIC_API_KEY`, `RUDDR_MCP_URL`, `SLACK_OPS_CHANNEL` |
+| `ruddr-mcp` | Ruddr API connector (retire Phase 2) | `RUDDR_API_KEY` |
 
 ### API route structure
 ```
-POST   /api/auth/google          — exchange Google token for session JWT
-GET    /api/auth/me              — current user
+-- Auth
+POST   /api/auth/google          exchange Google token for session JWT
+GET    /api/auth/me              current user
 
-GET    /api/accounts             — list accounts
-POST   /api/accounts             — create account
-GET    /api/accounts/:id         — get account + contacts + opportunities + projects
-PATCH  /api/accounts/:id         — update account
+-- Accounts
+GET    /api/accounts             list (filterable)
+POST   /api/accounts             create
+GET    /api/accounts/:id         get + contacts + opportunities + projects
+PATCH  /api/accounts/:id         update
 
-GET    /api/opportunities        — list (filterable by stage, owner, account)
-POST   /api/opportunities        — create
-PATCH  /api/opportunities/:id    — update (including stage change)
-POST   /api/opportunities/:id/won — close won → creates project shell
+-- Contacts
+POST   /api/contacts             create
+PATCH  /api/contacts/:id         update
 
-GET    /api/projects             — list
-POST   /api/projects             — create
-GET    /api/projects/:id         — get project + members + time + invoices
-PATCH  /api/projects/:id         — update
+-- Opportunities
+GET    /api/opportunities        list (filterable by stage, owner, account)
+POST   /api/opportunities        create
+PATCH  /api/opportunities/:id    update (including stage change)
+POST   /api/opportunities/:id/won  close won → creates project shell
 
-GET    /api/members              — list
-GET    /api/members/:id/capacity — adjusted capacity for date range
+-- Projects
+GET    /api/projects             list
+POST   /api/projects             create
+GET    /api/projects/:id         get + members + time + invoices
+PATCH  /api/projects/:id         update
 
-POST   /api/time                 — log time entry
-GET    /api/time                 — list (filterable by member, project, date)
-PATCH  /api/time/:id/approve     — approve time entry
+-- Members + capacity
+GET    /api/members              list
+GET    /api/members/:id/capacity adjusted capacity for date range
 
-GET    /api/forecast/snapshots   — list snapshots
-POST   /api/forecast/snapshot    — capture new snapshot
+-- Time
+POST   /api/time                 log time entry
+GET    /api/time                 list (filterable)
+PATCH  /api/time/:id/approve     approve time entry
 
-GET    /api/invoices             — list
-POST   /api/invoices             — create
-POST   /api/invoices/:id/send    — generate PDF + send via Resend
-PATCH  /api/invoices/:id/pay     — mark paid
+-- Forecast
+GET    /api/forecast/snapshots   list snapshots
+POST   /api/forecast/snapshot    capture new snapshot
 
--- Portal (restricted to ClientUser JWT)
-GET    /portal/api/projects      — client's projects only
-GET    /portal/api/invoices      — client's invoices only
-GET    /portal/api/invoices/:id/pdf — download PDF
+-- Invoices
+GET    /api/invoices             list
+POST   /api/invoices             create
+POST   /api/invoices/:id/send    generate PDF + send via Resend
+PATCH  /api/invoices/:id/pay     mark paid
+
+-- Slack (internal — verified by Slack signature)
+POST   /slack/events             receive Slack events
+POST   /slack/actions            receive Slack interactive actions
+
+-- Portal (ClientUser JWT — restricted to own account)
+GET    /portal/api/projects      client's projects only
+GET    /portal/api/invoices      client's invoices only
+GET    /portal/api/invoices/:id/pdf  download PDF
 ```
 
 ---
 
-## 9. Build Phases
+## 10. Build Phases
 
 ### Phase 0 — Foundation (weeks 1–3)
 - [ ] GitHub repo set up (`belmar-platform`)
-- [ ] Neon database provisioned
-- [ ] Hono.js Worker scaffold deployed
-- [ ] Google OAuth working end-to-end
+- [ ] Neon database provisioned and schema applied
+- [ ] Hono.js Worker scaffold deployed to Cloudflare
+- [ ] Google OAuth working end-to-end (internal users)
 - [ ] Database schema migrated (`schema.sql`)
 - [ ] Basic React app shell on Cloudflare Pages
-- [ ] CI/CD: push to main → auto deploy
+- [ ] CI/CD: push to main → auto deploy via Cloudflare Pages
+- [ ] **Slack bot live** — `belmar-slack-bot` Worker deployed
+- [ ] **Delivery agent working** — queries Ruddr MCP, responds in Slack
+- [ ] **Scheduled posts** — Sunday forecast update, Monday briefing live
+- [ ] Slack users linked to Member records
 
 ### Phase 1 — PSA (weeks 4–10)
-- [ ] Members CRUD
-- [ ] Projects CRUD
-- [ ] Allocations + capacity calculation
-- [ ] Time entry logging + approval
-- [ ] Forecast snapshots (migrate existing dashboard logic)
+- [ ] Members CRUD (web app)
+- [ ] Projects CRUD (web app)
+- [ ] Allocations + adjusted capacity calculation
+- [ ] Time entry logging + approval (web app + **Slack action agent**)
+- [ ] Forecast snapshots — database-backed, automated cron
 - [ ] Ruddr data migration script
 - [ ] Run parallel with Ruddr — validate parity
+- [ ] **Delivery agent switches from Ruddr MCP to platform API**
+- [ ] **Action agent: log time, approve time via Slack**
+- [ ] **Report agent: full delivery + capacity cross-analysis**
 
 ### Phase 2 — Billing (weeks 10–14)
-- [ ] Invoice generation (T&M from time entries + fixed fee)
-- [ ] PDF generation (Cloudflare Worker + HTML template)
+- [ ] Invoice generation (T&M + fixed fee) — web app
+- [ ] PDF generation (Worker + HTML template → R2)
 - [ ] Resend integration (invoice emails)
 - [ ] Payment tracking
 - [ ] Finance reporting views
+- [ ] **Finance agent: invoice status, overdue alerts, revenue queries**
+- [ ] **Proactive Slack alert: invoice overdue, payment received**
 - [ ] Retire Ruddr
 
 ### Phase 3 — CRM (weeks 14–22)
-- [ ] Accounts + Contacts CRUD
-- [ ] Opportunities + pipeline kanban
-- [ ] Activity logging
+- [ ] Accounts + Contacts CRUD (web app)
+- [ ] Opportunities + pipeline kanban (web app)
+- [ ] Activity logging (web app + **Slack: "@belmar log call with Valley Health..."**)
 - [ ] Proposals (file upload to R2)
 - [ ] Opportunity → Project handoff
 - [ ] Salesforce data migration script
 - [ ] Run parallel with Salesforce — validate parity
+- [ ] **Sales agent: pipeline queries, opportunity updates, account lookup**
+- [ ] **Action agent: create opportunity, update stage, log activity via Slack**
 - [ ] Retire Salesforce
 
 ### Phase 4 — Client Portal (weeks 20–24)
 - [ ] ClientUser auth (Google OAuth, any domain)
-- [ ] Client invitation flow
+- [ ] Client invitation flow (web app + email)
 - [ ] Portal views (projects, time, invoices)
-- [ ] PDF download
+- [ ] Invoice PDF download
 - [ ] Notification emails (invoice sent, project update)
 
-### Phase 5 — Polish & AI (ongoing)
-- [ ] AI forecast analysis (already started)
-- [ ] Natural language queries ("show me all projects over budget")
-- [ ] Automated weekly snapshot capture
-- [ ] Anomaly detection on time entries
-- [ ] Proposal drafting assistant
+### Phase 5 — AI + Polish (ongoing)
+- [ ] Natural language queries across all domains
+- [ ] Anomaly detection ("UJA CR#2 is down 15h this week — want me to investigate?")
+- [ ] Proposal drafting assistant via Slack
+- [ ] Smart invoice chasing — draft follow-up emails
+- [ ] Capacity recommendations — suggest reallocation to shortfall projects
 - [ ] Accounting system sync (Xero/QuickBooks)
+- [ ] Mobile-friendly web app
 
 ---
 
-## 10. Database Schema (starter — expand per phase)
+## 11. Database Schema (starter — expand per phase)
 
 ```sql
 -- MEMBERS
@@ -662,8 +937,37 @@ CREATE TABLE client_users (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
--- INDEXES
-CREATE INDEX idx_time_entries_member_date ON time_entries(member_id, date);
+-- SLACK INTEGRATION
+CREATE TABLE slack_users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  member_id UUID REFERENCES members(id),
+  slack_user_id TEXT UNIQUE NOT NULL,  -- Slack's U... ID
+  slack_workspace_id TEXT NOT NULL,
+  display_name TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Agent conversation log (for audit + debugging)
+CREATE TABLE agent_conversations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  slack_channel_id TEXT NOT NULL,
+  slack_thread_ts TEXT NOT NULL,
+  slack_user_id TEXT,
+  member_id UUID REFERENCES members(id),
+  agent TEXT NOT NULL,               -- delivery | sales | finance | report | action
+  user_message TEXT NOT NULL,
+  agent_response TEXT,
+  was_action BOOLEAN DEFAULT false,
+  action_confirmed BOOLEAN,
+  tokens_used INTEGER,
+  duration_ms INTEGER,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_agent_conversations_thread ON agent_conversations(slack_thread_ts);
+CREATE INDEX idx_agent_conversations_member ON agent_conversations(member_id);
+CREATE INDEX idx_slack_users_member ON slack_users(member_id);
 CREATE INDEX idx_time_entries_project ON time_entries(project_id);
 CREATE INDEX idx_allocations_member ON allocations(member_id);
 CREATE INDEX idx_allocations_project ON allocations(project_id);
@@ -677,28 +981,53 @@ CREATE INDEX idx_invoices_status ON invoices(status);
 
 ---
 
-## 11. Console Build Instructions
+## 12. Console Build Instructions
 
 When working in Claude Console / Workbench, always include these files as context:
 
-| File | Purpose |
-|---|---|
-| `requirements.md` | This document — scope and decisions |
-| `schema.sql` | Database schema — always keep current |
-| `index.html` | Current dashboard (until migrated to React) |
-| `proxy-worker.js` | API proxy Worker |
-| `CONVENTIONS.md` | Code style, naming, patterns (create as you establish them) |
+| File | Purpose | Keep updated? |
+|---|---|---|
+| `requirements.md` | This document — scope and decisions | Yes — update when scope changes |
+| `schema.sql` | Database schema | Yes — update with every migration |
+| `index.html` | Current dashboard (until migrated to React) | Yes — always latest version |
+| `workers/proxy-worker.js` | Anthropic API proxy | Only if changed |
+| `workers/slack-worker.js` | Slack bot + agents | Yes — update as agents evolve |
+| `CONVENTIONS.md` | Code style, naming, patterns | Yes — add patterns as established |
 
 ### System prompt for Console sessions
 ```
 You are a senior full-stack developer building Belmar Cloud's internal business platform.
-Stack: React + TypeScript (frontend), Hono.js on Cloudflare Workers (API), Neon Postgres (database), Google OAuth (auth), Cloudflare R2 (storage), Resend (email), Anthropic API (AI features).
-Always write TypeScript. Always handle errors explicitly. Always return complete file contents when editing existing files.
-Database: Neon Postgres — use parameterised queries, never string interpolation.
-Auth: Google OAuth ID tokens verified server-side, sessions as signed JWTs in httpOnly cookies.
-Refer to requirements.md and schema.sql for all entity definitions and business rules.
+
+Stack:
+- Frontend: React + TypeScript on Cloudflare Pages
+- API: Hono.js on Cloudflare Workers (TypeScript)
+- Database: Neon Postgres — parameterised queries only, never string interpolation
+- Auth: Google OAuth ID tokens verified server-side, sessions as signed JWTs in httpOnly cookies
+- AI: Anthropic Claude Sonnet via API — agents orchestrated in slack-worker.js
+- Slack: Multi-agent bot — Orchestrator routes to Delivery / Sales / Finance / Report / Action agents
+- Storage: Cloudflare R2 for files
+- Email: Resend for transactional email
+
+Rules:
+- Always write TypeScript
+- Always handle errors explicitly
+- Always return complete file contents when editing existing files
+- Refer to requirements.md for scope and business rules
+- Refer to schema.sql for all entity definitions
+- When adding Slack agent capabilities, follow the existing agent pattern in slack-worker.js
 ```
+
+### Useful Console session starters
+
+**Starting Phase 0:**
+> *"Scaffold a Hono.js Cloudflare Worker in TypeScript that connects to Neon Postgres and implements Google OAuth. Follow Phase 0 from requirements.md."*
+
+**Adding a new Slack agent capability:**
+> *"Add the ability for the Delivery agent in slack-worker.js to answer questions about member capacity. It should pull adjusted capacity from the platform API (GET /api/members/:id/capacity). Here is the current slack-worker.js: [paste file]"*
+
+**Building a new API endpoint:**
+> *"Add the POST /api/time endpoint to the Hono.js API Worker. Follow the schema in requirements.md for the time_entries table. Include validation, error handling, and role-based access (consultants can only log their own time)."*
 
 ---
 
-*Next step: Phase 0 — set up the repo, provision Neon, scaffold the Hono.js Worker, get Google OAuth working end-to-end.*
+*Next step: Phase 0 — set up the repo, provision Neon, scaffold the Hono.js Worker, get Google OAuth and Slack bot working end-to-end.*

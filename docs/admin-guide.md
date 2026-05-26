@@ -407,6 +407,96 @@ Flag any Account name conflicts for manual review before final import.
 
 ---
 
+
+## Slack bot (belmar-slack-bot)
+
+URL: `https://belmar-slack-bot.yourname.workers.dev`
+
+**Source file:** `workers/slack-worker.js` in GitHub
+**Full setup guide:** `docs/slack-setup.md`
+
+### Worker secrets
+
+| Secret name | Value | Notes |
+|---|---|---|
+| `SLACK_BOT_TOKEN` | `xoxb-...` | From Slack app → OAuth & Permissions |
+| `SLACK_SIGNING_SECRET` | from Slack | From Slack app → Basic Information |
+| `ANTHROPIC_API_KEY` | `sk-ant-...` | Shared with proxy Worker |
+| `RUDDR_MCP_URL` | `https://ruddr-mcp.roan-alfonso.workers.dev/mcp` | Existing Ruddr connector |
+| `SALESFORCE_MCP_URL` | from Salesforce MCP settings | Salesforce MCP connector URL |
+| `GMAIL_MCP_URL` | `https://gmailmcp.googleapis.com/mcp/v1` | Fixed Google endpoint |
+| `CALENDAR_MCP_URL` | `https://calendarmcp.googleapis.com/mcp/v1` | Fixed Google endpoint |
+| `GOOGLE_MCP_ACCESS_TOKEN` | OAuth access token | Refreshed periodically — see Google Workspace section |
+| `SLACK_OPS_CHANNEL` | Slack channel ID (e.g. `C07ABC123`) | Where scheduled posts go |
+
+### Agent routing
+
+The bot routes messages to specialist agents:
+
+| Agent | Handles | Has MCP access |
+|---|---|---|
+| Delivery | Forecasts, capacity, allocations, time | ✅ Ruddr |
+| Sales | Pipeline, opportunities, accounts | ⏳ Phase 3 |
+| Finance | Invoices, payments, revenue | ⏳ Phase 2 |
+| Report | Cross-domain analysis | ✅ Ruddr |
+| Action | Write operations (with confirmation) | ⏳ Phase 1 |
+
+### Adding a new agent
+
+1. Add entry to `AGENTS` object in `slack-worker.js`
+2. Update `ORCHESTRATOR_PROMPT` to mention the new agent
+3. Add MCP servers in `runAgent()` if needed
+4. Commit and redeploy
+
+### Cron triggers
+
+| Schedule | Fires | Action |
+|---|---|---|
+| `0 8 * * 0` | 8am Sunday | Weekly forecast update to `#belmar-ops` |
+| `0 8 * * 1` | 8am Monday | Monday briefing |
+| `0 8 1 * *` | 8am 1st of month | Opening snapshot reminder |
+| `0 17 L * *` | 5pm last day of month | Month-end reminder |
+
+
+## Google Workspace (Gmail + Calendar)
+
+The Slack bot reads Gmail and Google Calendar on behalf of your Google Workspace
+to give agents full communication context alongside PSA and CRM data.
+
+### What the bot can access
+- **Gmail:** read emails (not send — sending requires explicit user action with confirmation)
+- **Google Calendar:** read events and attendees
+
+### Access token management
+
+Google MCP servers require an OAuth access token passed as a Bearer token.
+These expire after 1 hour. The current implementation stores a static token as a
+Worker secret — this works for testing but needs a refresh flow for production.
+
+**For now (Phase 0):**
+1. Get an access token via OAuth playground (`developers.google.com/oauthplayground`)
+2. Select scopes: `https://www.googleapis.com/auth/gmail.readonly` and `https://www.googleapis.com/auth/calendar.readonly`
+3. Paste the access token as `GOOGLE_MCP_ACCESS_TOKEN` in the Worker secrets
+4. Token lasts ~1 hour — re-paste when it expires
+5. Bot gracefully skips Gmail/Calendar context if token expired (won't fail)
+
+**Phase 1 — proper refresh flow:**
+Store `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and `GOOGLE_REFRESH_TOKEN` as secrets.
+The Worker uses the refresh token to get a new access token on each request.
+This is part of the Phase 1 platform build.
+
+**Production — service account with domain-wide delegation:**
+For a shared bot reading across the whole team:
+1. Google Cloud Console → Service Accounts → create a service account
+2. Google Workspace Admin → Security → API controls → Domain-wide delegation
+3. Grant the service account access to Gmail and Calendar scopes
+4. The bot impersonates each user's account as needed
+
+### Scope of access
+The bot currently accesses Gmail and Calendar for the shared Google account
+whose token is stored. In Phase 1, this will be mapped per-member so queries
+are scoped to the relevant person's email/calendar.
+
 ## Monitoring & alerts
 
 ### Currently manual — check these regularly:
