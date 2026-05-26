@@ -106,22 +106,32 @@ Your repo is currently only on your computer. Publishing puts it on GitHub.com.
 
 ---
 
-## Step 7 — Connect GitHub to Cloudflare Pages (auto-deploy)
+## Step 7 — Create a Cloudflare Pages project and connect to GitHub
 
-Once connected, every time you update `index.html` and push to GitHub, Cloudflare automatically deploys the new version. No more manual uploading.
+This creates the hosted URL for your dashboard and wires it to GitHub so every
+push auto-deploys. Note: the Pages project doesn't exist yet — you're creating
+it here for the first time.
 
-1. Go to `dash.cloudflare.com`
-2. **Workers & Pages** → click your Pages project (`belmar-psa`)
-3. **Settings** → **Build & deploy** → **Connect to Git**
-4. Authorise Cloudflare to access your GitHub account
-5. Select the `belmar-platform` repository
-6. Settings:
-   - **Branch to deploy:** `main`
-   - **Build command:** *(leave blank)*
-   - **Build output directory:** `/` (forward slash only)
-7. Click **Save**
+1. Go to `dash.cloudflare.com` → **Workers & Pages**
+2. Click **Create application** → **Pages** tab → **Connect to Git**
+3. Click **Connect GitHub** and authorise Cloudflare to access your account
+4. Select the `belmar-platform` repository
+5. Fill in the deployment settings:
+   - **Project name:** `belmar-psa` *(this creates the project — you're naming it here)*
+   - **Production branch:** `main`
+   - **Build command:** *(leave completely blank)*
+   - **Build output directory:** `/`
+6. Click **Save and Deploy**
 
-From now on: edit file → commit → push → site updates automatically.
+Cloudflare will deploy for the first time and give you a URL:
+`https://belmar-psa.pages.dev`
+
+That's your live dashboard. From now on: edit file → commit → push → site
+updates automatically in ~30 seconds.
+
+> **Note:** `belmar-ai-proxy` is a separate thing — that's a *Worker* (runs
+> code). Pages is for hosting static files like `index.html`. They live in the
+> same Cloudflare dashboard but are different products.
 
 ---
 
