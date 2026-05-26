@@ -200,12 +200,14 @@ async function triggerLivePull(){
 
 Do these two fetches:
 
-1. Time entries (actuals): list_time_entries with typeId="project_time", dateOnAfter="${monthStart}", dateOnBefore="${cutover}", limit=100. If hasMore is true fetch next page with startingAfter. Sum the hours field: (a) by project name into byProject, (b) by member name into byMember, recording hours per project per member.
+1. Time entries (actuals): list_time_entries with typeId="project_time", dateOnAfter="${monthStart}", dateOnBefore="${cutover}", limit=100. If hasMore is true fetch next page with startingAfter until hasMore is false. For each entry sum the hours field by project name (use the project.name field) and by member name (use the member.name field).
 
-2. Allocations (forecast): list_allocations with assignmentTypeId="project", startOnBefore="${monthEnd}", endOnAfter="${forecastFrom}", limit=100. If hasMore fetch next page. For each allocation prorate hours to the ${forecastFrom}–${monthEnd} window only (weekly: hoursPerWeek × overlap days / 7; use totalHours if allocation fits entirely in window). Add prorated hours to byProject and byMember same structure as step 1.
+2. Allocations (forecast): list_allocations with assignmentTypeId="project", startOnBefore="${monthEnd}", endOnAfter="${forecastFrom}", limit=100. If hasMore fetch next page with startingAfter until hasMore is false. For each allocation use the totalHours field directly — do NOT attempt to prorate. Add these hours to the same byProject and byMember structures from step 1, keyed on project.name and member.name.
+
+Important: include ALL projects and members that appear in either fetch, even if hours are small. Do not filter or skip any.
 
 Return exactly:
-{"cutover":"${cutover}","monthStart":"${monthStart}","monthEnd":"${monthEnd}","totalHours":<n>,"byProject":{"<name>":{"hrs":<n>,"members":{"<member>":<hrs>}}},"byMember":{"<name>":{"hrs":<n>,"projects":{"<project>":<hrs>}}},"error":null}
+{"cutover":"${cutover}","monthStart":"${monthStart}","monthEnd":"${monthEnd}","totalHours":<sum of all hours>,"byProject":{"<project.name>":{"hrs":<n>,"members":{"<member.name>":<hrs>}}},"byMember":{"<member.name>":{"hrs":<n>,"projects":{"<project.name>":<hrs>}}},"projectCount":<n>,"memberCount":<n>,"error":null}
 
 Return ONLY the JSON. No markdown. No backticks.`;
 
