@@ -139,7 +139,7 @@ input[type=range]{padding:0;height:20px}
 // ═══════════════════════════════════════════════════════════
 // CONFIGURATION
 // ═══════════════════════════════════════════════════════════
-const PROXY_URL = "https://belmar-ai-proxy.roan-alfonso.workers.dev";
+const PROXY_URL = "https://belmar-ai-proxy.yourname.workers.dev";
 const RUDDR_MCP_URL = "https://ruddr-mcp.roan-alfonso.workers.dev/mcp";
 // ═══════════════════════════════════════════════════════════
 
@@ -196,42 +196,18 @@ async function triggerLivePull(){
   const nextDay=new Date(cutoverDt);nextDay.setDate(nextDay.getDate()+1);
   const forecastFrom=nextDay.toISOString().slice(0,10);
 
-  const prompt=`You are a data extraction assistant for Belmar Cloud. Use Ruddr MCP tools and return ONLY a raw JSON object.
+  const prompt=`You are a data extraction assistant for Belmar Cloud. Use Ruddr MCP tools. Return ONLY a raw JSON object — no markdown, no explanation.
 
-Tasks:
-1. Fetch ALL time entries: typeId="project_time", dateOnAfter="${monthStart}", dateOnBefore="${cutover}". Paginate startingAfter until hasMore false. Sum the hours field by project name AND by member name. Record each member's hours per project.
+Do these two fetches:
 
-2. Fetch ALL project allocations: assignmentTypeId="project", startOnBefore="${monthEnd}", endOnAfter="${forecastFrom}". Paginate until hasMore false. Prorate each to ${forecastFrom}–${monthEnd} window. Sum by project AND by member.
+1. Time entries (actuals): list_time_entries with typeId="project_time", dateOnAfter="${monthStart}", dateOnBefore="${cutover}", limit=100. If hasMore is true fetch next page with startingAfter. Sum the hours field: (a) by project name into byProject, (b) by member name into byMember, recording hours per project per member.
 
-3. Fetch ALL time-off allocations: assignmentTypeId="time_off", startOnBefore="${monthEnd}", endOnAfter="${monthStart}". Paginate until hasMore false. For each, calculate the hours that fall within ${monthStart}–${monthEnd} only. Sum timeOffHrs per member. This covers stat holidays, approved vacation, and sick days.
+2. Allocations (forecast): list_allocations with assignmentTypeId="project", startOnBefore="${monthEnd}", endOnAfter="${forecastFrom}", limit=100. If hasMore fetch next page. For each allocation prorate hours to the ${forecastFrom}–${monthEnd} window only (weekly: hoursPerWeek × overlap days / 7; use totalHours if allocation fits entirely in window). Add prorated hours to byProject and byMember same structure as step 1.
 
-4. Fetch ALL active+billable members (paginate all pages using startingAfter). For each member:
-   a. Find their active availabilityPeriod where start <= "${monthEnd}" and (end is null or end >= "${monthStart}")
-   b. hoursPerDay is a 7-element array [Mon,Tue,Wed,Thu,Fri,Sat,Sun]
-   c. Count the actual number of each weekday that falls in ${monthStart}–${monthEnd}
-   d. rawCapacityHrs = sum of (hoursPerDay[i] × count of that weekday in month) for i=0..6
-   e. timeOffHrs = hours from step 3 for this member (0 if none)
-   f. adjustedCapacityHrs = max(0, rawCapacityHrs − timeOffHrs)
+Return exactly:
+{"cutover":"${cutover}","monthStart":"${monthStart}","monthEnd":"${monthEnd}","totalHours":<n>,"byProject":{"<name>":{"hrs":<n>,"members":{"<member>":<hrs>}}},"byMember":{"<name>":{"hrs":<n>,"projects":{"<project>":<hrs>}}},"error":null}
 
-5. Merge time entries + project allocations per project and per member.
-
-Return exactly this JSON shape and nothing else:
-{
-  "cutover":"${cutover}","monthStart":"${monthStart}","monthEnd":"${monthEnd}",
-  "totalHours":<n>,
-  "byProject":{"<project>":{"hrs":<n>,"members":{"<member>":<hrs>}}},
-  "byMember":{
-    "<member>":{
-      "hrs":<n>,
-      "rawCapacityHrs":<n>,
-      "timeOffHrs":<n>,
-      "adjustedCapacityHrs":<n>,
-      "projects":{"<project>":<hrs>}
-    }
-  },
-  "error":null
-}
-Return ONLY the JSON object, no markdown, no backticks, no explanation.`;
+Return ONLY the JSON. No markdown. No backticks.`;
 
   try{
     const res=await fetch(`${PROXY_URL}/v1/messages`,{method:'POST',headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01','anthropic-beta':'mcp-client-2025-04-04'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:6000,mcp_servers:[{type:'url',url:RUDDR_MCP_URL,name:'ruddr'}],messages:[{role:'user',content:prompt}]})});
