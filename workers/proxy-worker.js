@@ -16,16 +16,10 @@
 
 const ANTHROPIC_API = "https://api.anthropic.com";
 const ALLOWED_ORIGINS = [
-  // Add your Cloudflare Pages URL here once deployed, e.g.:
-  // "https://belmar-psa.pages.dev",
-  // "https://psa.belmarcloud.com",
-  // During local dev, allow file:// and localhost:
-  "null",           // file:// origin
+  "https://belmar-platform.pages.dev",
+  "null",
   "http://localhost",
-  "http://localhost:3000",
   "http://127.0.0.1",
-  "https://belmar-platform.pages.dev",  // ← add this
-
 ];
 
 function corsHeaders(origin) {
